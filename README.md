@@ -272,6 +272,40 @@ the link printed to the console.
   arguments, and its stored secrets are only used for its own user — so a prompt-injected
   agent cannot send them elsewhere.
 
+### Quick launch on Windows
+
+The page gets a new port and access token on every start, so it cannot be bookmarked —
+launch it from a shortcut instead and the browser opens with the right link.
+
+**Start-menu shortcut with a hotkey.** Run once in PowerShell (adjust `$exe`):
+
+```powershell
+$exe = "C:\Tools\ssh-connect\ssh-connect.exe"
+$lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\SSH-Connect.lnk"
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+$s.TargetPath       = $exe
+$s.Arguments        = "ui"
+$s.WorkingDirectory = Split-Path $exe
+$s.Description      = "SSH-Connect — saved hosts"
+$s.Hotkey           = "CTRL+ALT+S"
+$s.WindowStyle      = 7          # start the console minimized; only the browser shows
+$s.Save()
+```
+
+Then open the UI with **Ctrl+Alt+S**, from Start (type `SSH-Connect`), or pin the
+shortcut to the taskbar (right-click it in Start → Pin to taskbar). Keep the minimized
+console running while you use the page; stop it with the "Остановить интерфейс" link at
+the bottom of the page or by closing the console. If the hotkey is taken, pick another
+(e.g. `"CTRL+ALT+H"`) and run the script again.
+
+**PowerShell command.** Add to your profile (`notepad $PROFILE`):
+
+```powershell
+function sshui { & "C:\Tools\ssh-connect\ssh-connect.exe" ui }
+```
+
+Every new PowerShell window then opens the UI with `sshui`.
+
 ## Configuration
 
 - **Inventory:** managed by `ssh-connect ui`, or edit `~/.ssh-connect/hosts.toml` by hand
