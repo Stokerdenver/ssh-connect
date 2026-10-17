@@ -141,7 +141,7 @@ impl SshConnectServer {
                 let perms = params.permissions.as_deref().ok_or_else(|| {
                     invalid_err("'permissions' required for chmod")
                 })?;
-                format!("{sudo}chmod{r_upper} {perms} {path}")
+                format!("{sudo}chmod{r_upper} {} {path}", shell_quote(perms))
             }
             "chown" => {
                 let owner = params.owner.as_deref().ok_or_else(|| {
@@ -193,8 +193,8 @@ impl SshConnectServer {
         })?;
 
         let user_flag = match (&params.user, params.sudo) {
-            (Some(u), true) => format!("sudo crontab -u {} ", u),
-            (Some(u), false) => format!("crontab -u {} ", u),
+            (Some(u), true) => format!("sudo crontab -u {} ", shell_quote(u)),
+            (Some(u), false) => format!("crontab -u {} ", shell_quote(u)),
             _ => "crontab ".to_string(),
         };
 

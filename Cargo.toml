@@ -59,8 +59,29 @@ dirs = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Local web UI for managing saved hosts (`ssh-connect ui`), 127.0.0.1 only
+tiny_http = "0.12"
+
+# Windows Credential Manager (saved passwords) and broker-owner verification.
+# Declared for every target so the FFI can be type-checked on any OS with
+# RUSTFLAGS="--cfg ssh_connect_wincheck"; it is only linked on Windows.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+# getuid() for verifying the broker socket's peer
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ssh_connect_wincheck)"] }
 
 [profile.release]
 opt-level      = 3        # network/crypto tool — favor speed over min size

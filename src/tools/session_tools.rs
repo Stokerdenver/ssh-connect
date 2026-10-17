@@ -17,6 +17,7 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::config::Inventory;
 use crate::discovery::ports;
 use crate::error::ToolError;
 use crate::server::SshConnectServer;
@@ -24,14 +25,16 @@ use crate::tools::util::json_result;
 use crate::transport::serial::SerialTransport;
 use crate::transport::ssh::{SshAuth, SshTransport};
 use crate::transport::telnet::TelnetTransport;
-use crate::transport::{Protocol, Session, Transport, DEFAULT_PROMPT};
+use crate::transport::{Protocol, SavedHostRef, Session, Transport, DEFAULT_PROMPT};
 use regex::Regex;
 
 // ── parameter structs ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConnectParams {
-    /// Session name (also looked up in the inventory hosts.toml for defaults).
+    /// Session name. If it matches a saved host (see list_hosts), that host's
+    /// protocol, address, port, user and stored credentials are used and
+    /// cannot be overridden.
     pub name: String,
     /// Protocol: "ssh", "telnet", or "serial". Falls back to the inventory entry.
     pub protocol: Option<String>,
@@ -41,7 +44,7 @@ pub struct ConnectParams {
     pub port: Option<u16>,
     /// Login user (ssh).
     pub username: Option<String>,
-    /// Password (ssh/telnet). Prefer an env override for inventory hosts.
+    /// Password (ssh). Not needed for saved hosts — their stored password is used.
     pub password: Option<String>,
     /// Path to an SSH private key (ssh; alternative to password).
     pub key_path: Option<String>,
@@ -71,20 +74,48 @@ pub struct DisconnectParams {
 
 #[tool_router(router = session_tool_router, vis = "pub(crate)")]
 impl SshConnectServer {
-    #[tool(description = "Open a named interactive session to a switch/host over SSH, Telnet, or serial. If `name` matches a host in the inventory (hosts.toml), its parameters are used as defaults and explicit arguments override them. The session persists across tool calls until `disconnect`. Use this (with run_command/enable/login) for network devices and consoles; use ssh_connect for server-ops with exit codes.")]
+    #[tool(description = "Open a named interactive session to a switch/host over SSH, Telnet, or serial. Prefer saved hosts: call list_hosts and pass the saved name as `name` — its address, port, user and stored password are used (you never need the password), and its address/port/protocol cannot be overridden. For an unsaved device pass protocol/host/etc. explicitly under a name that is not a saved host. The session persists across tool calls until `disconnect`. Use this (with run_command/enable/login) for network devices and consoles; use ssh_connect for server-ops with exit codes.")]
     async fn connect(
         &self,
         Parameters(params): Parameters<ConnectParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let name = params.name.clone();
-        let entry = self.inventory.get(&name).cloned();
+        let entry = Inventory::load_default().get(&name).cloned();
+
+        // A saved host is pinned to what the user saved: its stored password
+        // must never be sent to an address, port or protocol chosen by the agent.
+        if let Some(e) = &entry {
+            let pinned = |field: &str| {
+                ToolError::bad_request(format!(
+                    "'{name}' is a saved host; its {field} cannot be overridden. Connect with just \
+                     the name, ask the user to edit it in `ssh-connect ui`, or use a different session \
+                     name for an unsaved device."
+                ))
+            };
+            if let Some(p) = params.protocol.as_deref() {
+                if parse_protocol(p)? != e.protocol {
+                    return Err(pinned("protocol").into());
+                }
+            }
+            if params.host.is_some() && params.host != e.host {
+                return Err(pinned("host").into());
+            }
+            if let Some(p) = params.port {
+                if e.port.map_or(p != e.effective_port(), |ep| ep != p) {
+                    return Err(pinned("port").into());
+                }
+            }
+            if params.serial_port.is_some() && params.serial_port != e.serial_port {
+                return Err(pinned("serial port").into());
+            }
+        }
 
         // Resolve protocol from args, falling back to the inventory entry.
         let protocol = match params.protocol.as_deref() {
             Some(s) => parse_protocol(s)?,
             None => entry.as_ref().map(|e| e.protocol).ok_or_else(|| {
                 ToolError::bad_request(format!(
-                    "no 'protocol' given and no inventory host named '{name}'"
+                    "no 'protocol' given and no saved host named '{name}' (see list_hosts)"
                 ))
             })?,
         };
@@ -95,16 +126,28 @@ impl SshConnectServer {
             .username
             .clone()
             .or_else(|| entry.as_ref().and_then(|e| e.username.clone()));
-        let password = params
-            .password
-            .clone()
-            .or_else(|| entry.as_ref().and_then(|e| e.password.clone()));
+        // Stored secrets belong to the saved user; a different user must bring
+        // its own credentials.
+        let use_saved_secrets = entry.as_ref().is_some_and(|e| {
+            params.username.is_none() || e.username.is_none() || params.username == e.username
+        });
+        let password = params.password.clone().or_else(|| {
+            entry
+                .as_ref()
+                .filter(|_| use_saved_secrets)
+                .and_then(|e| e.resolve_password())
+        });
         let key_path = params
             .key_path
             .clone()
             .map(PathBuf::from)
             .or_else(|| entry.as_ref().and_then(|e| e.key_path.clone()));
-        let passphrase = params.passphrase.clone();
+        let passphrase = params.passphrase.clone().or_else(|| {
+            entry
+                .as_ref()
+                .filter(|_| use_saved_secrets)
+                .and_then(|e| e.resolve_passphrase())
+        });
         let serial_port = params
             .serial_port
             .clone()
@@ -134,7 +177,7 @@ impl SshConnectServer {
                     .unwrap_or_else(|| alias.clone());
                 let username = username.or(defaults.username).ok_or_else(|| {
                     ToolError::bad_request(format!(
-                        "ssh requires 'username': pass it, add it to the inventory, set User for '{alias}' in ~/.ssh/config, or set USER/USERNAME in the environment"
+                        "ssh requires 'username': pass it, save it in `ssh-connect ui`, set User for '{alias}' in ~/.ssh/config, or set USER/USERNAME in the environment"
                     ))
                 })?;
                 let port = port.or(defaults.port).unwrap_or(22);
@@ -178,6 +221,15 @@ impl SshConnectServer {
         };
 
         let mut session = Session::new(name.clone(), target.clone(), prompt, transport);
+        // Remember which saved host (and user) this session belongs to, so
+        // `login`/`enable` can use its stored secrets without the agent ever
+        // handling them.
+        if use_saved_secrets {
+            session.saved_host = entry.as_ref().map(|e| SavedHostRef {
+                name: e.name.clone(),
+                signature: e.signature(),
+            });
+        }
 
         // Optional wake: send a carriage return and capture the banner/prompt.
         let mut banner = None;
@@ -219,22 +271,33 @@ impl SshConnectServer {
         Ok(json_result(json!({ "count": ports.len(), "ports": ports })))
     }
 
-    #[tool(description = "List named hosts from the inventory (hosts.toml).")]
+    #[tool(description = "List the hosts the user saved in SSH-Connect (managed in `ssh-connect ui`). Connect to one by name: ssh_connect {host: <name>} for servers, connect {name: <name>} for interactive/switch/serial sessions. Shows which credentials are stored (never the secrets themselves); has_password/has_enable_password mean you do not need to ask the user for them.")]
     async fn list_hosts(&self) -> Result<CallToolResult, ErrorData> {
-        let hosts: Vec<_> = self
-            .inventory
+        use crate::secrets::{self, SecretKind};
+        let inventory = Inventory::load_default();
+        let hosts: Vec<_> = inventory
             .summaries()
             .into_iter()
             .map(|h| {
                 json!({
                     "name": h.name,
+                    "description": h.description,
                     "protocol": h.protocol.to_string(),
                     "host": h.host,
+                    "port": h.port,
+                    "username": h.username,
                     "serial_port": h.serial_port,
+                    "auth": if h.key_path.is_some() { "key" } else { "password" },
+                    "has_password": h.resolve_password().is_some(),
+                    "has_enable_password": secrets::has(&h.name, SecretKind::Enable),
                 })
             })
             .collect();
-        Ok(json_result(json!({ "count": hosts.len(), "hosts": hosts })))
+        Ok(json_result(json!({
+            "count": hosts.len(),
+            "hosts": hosts,
+            "inventory": Inventory::path().display().to_string(),
+        })))
     }
 }
 

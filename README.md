@@ -116,17 +116,43 @@ Or in an MCP settings file:
 The server speaks MCP over stdio; all logging goes to stderr (set `RUST_LOG=info` to see
 broker/role messages).
 
+## Saved hosts and the web UI
+
+Run `ssh-connect ui` (or just double-click `ssh-connect.exe`) to open a local page for
+managing saved hosts: name, address, port, user, password **or** private key (+ passphrase),
+enable password for network gear, description for the agent, and a "test connection"
+button. The page listens on `127.0.0.1` only and every request needs the per-run token in
+the link printed to the console.
+
+- Hosts live in `~/.ssh-connect/hosts.toml` (`%USERPROFILE%\.ssh-connect\hosts.toml`),
+  never in the current directory. The server re-reads it on every call, so a host added
+  in the UI is usable immediately — no MCP client restart.
+- Passwords, passphrases and enable passwords go to the **Windows Credential Manager**
+  (`ssh-connect:<kind>:<host>` generic credentials) — elsewhere to
+  `~/.ssh-connect/secrets.json` (0600). The page can set or delete them, never read them.
+- The agent calls `list_hosts`, then `ssh_connect {host: "<name>"}` or
+  `connect {name: "<name>"}`; `login`/`enable` take the stored secrets when `password` is
+  omitted. Secrets never pass through the model, the chat or the broker pipe.
+- A saved host is **pinned**: its address, port and protocol cannot be overridden by tool
+  arguments, and its stored secrets are only used for its own user — so a prompt-injected
+  agent cannot send them elsewhere.
+
 ## Configuration
 
-- **Inventory:** copy `hosts.example.toml` to `hosts.toml` and edit. The `connect` tool
-  can then reach a device by `name` alone. Override the path with `SSHCONNECT_HOSTS`.
-- **Secrets:** prefer environment variables over committing passwords. For host
-  `core-sw-01`, set `SSHCONNECT_CORE_SW_01_PASSWORD` (name upper-cased, non-alphanumerics
-  collapsed to `_`); the same pattern applies to `USERNAME`, `HOST`, `PORT`, `KEY_PATH`.
-- **Host-key checking (server-ops SSH):** accepts any key by default. Set
-  `SSHCONNECT_HOST_KEY_CHECK=tofu` (the legacy `VPS_HOST_KEY_CHECK` is also accepted) to
-  enable trust-on-first-use against `~/.ssh-connect/known_hosts`, which refuses a later
-  key mismatch.
+- **Inventory:** managed by `ssh-connect ui`, or edit `~/.ssh-connect/hosts.toml` by hand
+  (see `hosts.example.toml`). Override the path with `SSHCONNECT_HOSTS`.
+- **Secrets via env (optional):** for host `core-sw-01`, `SSHCONNECT_CORE_SW_01_PASSWORD`
+  (name upper-cased, non-alphanumerics collapsed to `_`) overrides the stored password;
+  `_PASSPHRASE`, `_ENABLE_PASSWORD`, `_USERNAME`, `_HOST`, `_PORT`, `_KEY_PATH` work the same.
+- **Host-key checking (both SSH paths):** trust-on-first-use against
+  `~/.ssh-connect/known_hosts` **by default** — the first key seen is recorded, a later
+  mismatch is refused. Reset a reinstalled device's key in the UI ("Забыть ключ хоста").
+  Turn off in the UI settings or with `SSHCONNECT_HOST_KEY_CHECK=off`.
+- **Transfer folder:** tools that read or write local files (`ssh_upload_file`,
+  `ssh_download_file`, `ubuntu_website_deployment`, `upload_config`, `download_config`,
+  `switch_backup_config.save_to`) only work inside one folder — `~/ssh-connect-files` by
+  default, changeable in the UI or with `SSHCONNECT_TRANSFER_DIR`. Relative paths resolve
+  inside it; `..` and links leading outside are refused.
 - **SSH client config:** resolution is delegated to the local OpenSSH client — both
   connect tools run `ssh -G <host>` and use the HostName, User, Port and IdentityFile it
   reports, so `Host`/`Match` blocks, `Include`s, wildcards, percent tokens,
@@ -149,6 +175,10 @@ connections and COM ports. Later instances act as proxies that forward `tools/ca
 the owner, so a session opened in one client is usable from another and two clients
 cannot collide on the same serial port. Tool schemas are served locally by every
 instance. On a platform with neither transport, each instance is a standalone owner.
+
+Before attaching as a proxy, an instance checks that the endpoint is served by the same
+OS user (Windows: the pipe server's token SID; Unix: `SO_PEERCRED`), so another account
+cannot squat the well-known name and receive forwarded tool calls.
 
 Limitation: if the owner process exits, existing proxies do not currently re-elect a new
 owner mid-session — restart the affected client. A newly started instance always elects

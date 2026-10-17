@@ -1,46 +1,13 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use russh::client::Handle;
 use tokio::sync::Mutex;
 
-/// How to treat the server's host key on connect.
-///
-/// Default is [`HostKeyPolicy::AcceptAny`] so existing flows keep working. Set
-/// the `SSHCONNECT_HOST_KEY_CHECK` env var (or the legacy `VPS_HOST_KEY_CHECK`)
-/// to `tofu` (or `1`/`true`/`on`/`yes`) to enable trust-on-first-use
-/// verification against `~/.ssh-connect/known_hosts`: the first key seen for a
-/// host is recorded, and any later mismatch refuses the connection (possible
-/// MITM).
-#[derive(Clone)]
-pub enum HostKeyPolicy {
-    AcceptAny,
-    Tofu(PathBuf),
-}
-
-/// Resolve the host-key policy from the environment, once per connect.
-pub fn host_key_policy() -> HostKeyPolicy {
-    let enabled = |var: &str| {
-        std::env::var(var)
-            .ok()
-            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "tofu" | "1" | "true" | "on" | "yes"))
-            .unwrap_or(false)
-    };
-    if enabled("SSHCONNECT_HOST_KEY_CHECK") || enabled("VPS_HOST_KEY_CHECK") {
-        HostKeyPolicy::Tofu(known_hosts_path())
-    } else {
-        HostKeyPolicy::AcceptAny
-    }
-}
-
-fn known_hosts_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".ssh-connect")
-        .join("known_hosts")
-}
+pub use crate::hostkeys::{host_key_policy, HostKeyPolicy};
 
 /// SSH client handler. Carries the target identity and host-key policy so
-/// `check_server_key` can do trust-on-first-use when enabled.
+/// `check_server_key` can do trust-on-first-use (the default; see
+/// [`crate::hostkeys`]). Used by both the server-ops and interactive SSH paths.
 pub struct VpsClientHandler {
     pub host: String,
     pub port: u16,
@@ -54,53 +21,7 @@ impl russh::client::Handler for VpsClientHandler {
         &mut self,
         server_public_key: &russh::keys::PublicKey,
     ) -> Result<bool, Self::Error> {
-        let path = match &self.policy {
-            HostKeyPolicy::AcceptAny => return Ok(true),
-            HostKeyPolicy::Tofu(p) => p,
-        };
-
-        // Serialize the key to its authorized_keys form for storage/comparison.
-        let key_line = match server_public_key.to_openssh() {
-            Ok(k) => k.trim().to_string(),
-            Err(_) => return Ok(false), // unencodable key — refuse rather than guess
-        };
-        let id = format!("{}:{}", self.host, self.port);
-
-        // Look for an existing pin for this host:port.
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            for line in contents.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-                if let Some((stored_id, stored_key)) = line.split_once(' ') {
-                    if stored_id == id {
-                        if stored_key.trim() == key_line {
-                            return Ok(true);
-                        }
-                        tracing::error!(
-                            host = %id,
-                            "host key MISMATCH — refusing connection (possible MITM). \
-                             Remove the stale line from {} if this change is expected.",
-                            path.display()
-                        );
-                        return Ok(false);
-                    }
-                }
-            }
-        }
-
-        // First time we've seen this host — learn it (TOFU).
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{} {}", id, key_line);
-        }
-        let fp = server_public_key.fingerprint(Default::default());
-        tracing::info!(host = %id, fingerprint = %fp, "learned new host key (TOFU)");
-        Ok(true)
+        Ok(crate::hostkeys::verify(&self.policy, &self.host, self.port, server_public_key))
     }
 }
 

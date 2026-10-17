@@ -22,8 +22,11 @@ same look, same sections, same scoring logic, every time.
 2. **Find the baseline.** Newest `reports/<HOST>-health-*.json` for this hostname
    (match loosely on the device's short name). If found → delta mode; pass its path.
 3. **Spawn ONE general-purpose agent** with a prompt containing, verbatim:
-   - The connection parameters (and that the password must only be sent via the
-     `enable` / `login` tools — never `run_command`).
+   - The saved host name from `list_hosts` (connect with `connect {name}`; `login` /
+     `enable` then use the stored credentials — omit `password`). Never paste a
+     password into the agent prompt; if the device is not saved, ask the user to add it
+     in `ssh-connect ui`. Passwords, if ever supplied, go only via `enable` / `login`
+     — never `run_command`.
    - Full paths to `health-report/template.html`, `health-report/rubric.md`, and
      the vendor reference for the platform (`switch-management/references/`).
    - The baseline JSON path (or "none — snapshot mode").

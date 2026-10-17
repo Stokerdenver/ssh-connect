@@ -175,7 +175,14 @@ echo "security_updates=$(apt-get -s upgrade 2>/dev/null | grep -i '^Inst' | grep
             let domain_list = if params.domains.is_empty() {
                 "$(ls /etc/letsencrypt/live 2>/dev/null | grep -v README)".to_string()
             } else {
-                params.domains.join(" ")
+                // Domains are spliced into a shell loop: hostname characters only.
+                if let Some(bad) = params.domains.iter().find(|d| {
+                    d.is_empty()
+                        || !d.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '*'))
+                }) {
+                    return Err(ErrorData::invalid_params(format!("invalid domain '{bad}'"), None));
+                }
+                params.domains.iter().map(|d| format!("'{d}'")).collect::<Vec<_>>().join(" ")
             };
             let script = format!(
                 r#"

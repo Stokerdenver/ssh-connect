@@ -73,7 +73,11 @@ where
 pub async fn elect() -> Election {
     use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
 
-    match ServerOptions::new().first_pipe_instance(true).create(DEFAULT_PIPE) {
+    match ServerOptions::new()
+        .first_pipe_instance(true)
+        .reject_remote_clients(true)
+        .create(DEFAULT_PIPE)
+    {
         Ok(server) => {
             tracing::info!(pipe = DEFAULT_PIPE, "ssh-connect: BROKER OWNER (holds devices, serves peers)");
             Election::Owner(OwnerListener(server))
@@ -81,6 +85,16 @@ pub async fn elect() -> Election {
         Err(_) => {
             for _ in 0..40 {
                 if let Ok(client) = ClientOptions::new().open(DEFAULT_PIPE) {
+                    // The pipe name is global: make sure its owner is us (same
+                    // user) before forwarding tool calls to it.
+                    use std::os::windows::io::AsRawHandle;
+                    if !crate::winsec::pipe_server_is_current_user(client.as_raw_handle() as _) {
+                        tracing::warn!(
+                            pipe = DEFAULT_PIPE,
+                            "ssh-connect: broker pipe is owned by another account; running standalone"
+                        );
+                        return Election::OwnerLocal;
+                    }
                     if let Some(peer) = handshake_client(client).await {
                         tracing::info!(pipe = DEFAULT_PIPE, "ssh-connect: PROXY to existing broker");
                         return Election::Proxy(peer);
@@ -106,7 +120,7 @@ pub async fn serve_owner(listener: OwnerListener, owner: SshConnectServer) {
             tracing::warn!(error = %e, "broker: pipe accept failed");
             break;
         }
-        let next = match ServerOptions::new().create(DEFAULT_PIPE) {
+        let next = match ServerOptions::new().reject_remote_clients(true).create(DEFAULT_PIPE) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "broker: could not create next pipe instance");
@@ -147,8 +161,13 @@ pub async fn elect() -> Election {
 
     let path = socket_path();
 
-    // If a live owner is already listening, attach as a proxy.
+    // If a live owner is already listening, attach as a proxy — but only to a
+    // socket served by our own user (the /tmp fallback is shared).
     if let Ok(stream) = UnixStream::connect(&path).await {
+        if !peer_is_current_user(&stream) {
+            tracing::warn!(socket = %path.display(), "ssh-connect: broker socket owned by another user; running standalone");
+            return Election::OwnerLocal;
+        }
         if let Some(peer) = handshake_client(stream).await {
             tracing::info!(socket = %path.display(), "ssh-connect: PROXY to existing broker");
             return Election::Proxy(peer);
@@ -160,12 +179,19 @@ pub async fn elect() -> Election {
     let _ = std::fs::remove_file(&path);
     match UnixListener::bind(&path) {
         Ok(listener) => {
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
             tracing::info!(socket = %path.display(), "ssh-connect: BROKER OWNER (holds devices, serves peers)");
             Election::Owner(OwnerListener(listener))
         }
         Err(_) => {
             // Lost a race with another starting instance — try once more to attach.
             if let Ok(stream) = UnixStream::connect(&path).await {
+                if !peer_is_current_user(&stream) {
+                    return Election::OwnerLocal;
+                }
                 if let Some(peer) = handshake_client(stream).await {
                     tracing::info!(socket = %path.display(), "ssh-connect: PROXY to existing broker");
                     return Election::Proxy(peer);
@@ -178,6 +204,13 @@ pub async fn elect() -> Election {
 }
 
 #[cfg(unix)]
+fn peer_is_current_user(stream: &tokio::net::UnixStream) -> bool {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let me = unsafe { libc::getuid() };
+    stream.peer_cred().map(|c| c.uid() == me).unwrap_or(false)
+}
+
+#[cfg(unix)]
 pub async fn serve_owner(listener: OwnerListener, owner: SshConnectServer) {
     use rmcp::ServiceExt;
 
@@ -185,6 +218,10 @@ pub async fn serve_owner(listener: OwnerListener, owner: SshConnectServer) {
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
+                if !peer_is_current_user(&stream) {
+                    tracing::warn!("broker: rejected a connection from another user");
+                    continue;
+                }
                 let peer_server = owner.clone();
                 tokio::spawn(async move {
                     match peer_server.serve(stream).await {

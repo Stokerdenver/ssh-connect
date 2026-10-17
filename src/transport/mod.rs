@@ -154,7 +154,19 @@ pub struct Session {
     pub target: String,
     /// Prompt regex used to detect end-of-output.
     pub prompt: Regex,
+    /// The saved host this session was opened from, if any — lets `login` /
+    /// `enable` use its stored secrets.
+    pub saved_host: Option<SavedHostRef>,
     transport: Box<dyn Transport>,
+}
+
+/// Identifies the saved inventory entry a session came from, plus a snapshot of
+/// where it pointed at connect time. Stored secrets are only used while the
+/// entry still points to the same place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedHostRef {
+    pub name: String,
+    pub signature: String,
 }
 
 impl Session {
@@ -165,7 +177,7 @@ impl Session {
         transport: Box<dyn Transport>,
     ) -> Self {
         let protocol = transport.protocol();
-        Self { name, protocol, target, prompt, transport }
+        Self { name, protocol, target, prompt, saved_host: None, transport }
     }
 
     /// Write `text` followed by the protocol's line ending.

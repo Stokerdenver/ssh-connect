@@ -130,7 +130,7 @@ impl SshConnectServer {
                 if unit.is_empty() {
                     return Err(invalid_err("'unit' is required when service = 'journalctl'"));
                 }
-                format!("{sudo}journalctl -u {unit} -n {n} --no-pager 2>&1")
+                format!("{sudo}journalctl -u {} -n {n} --no-pager 2>&1", shell_quote(unit))
             }
             other => return Err(invalid_err(format!("Unknown service '{}'. Use: nginx-access | nginx-error | syslog | auth | mysql | php | journalctl", other))),
         };
@@ -164,6 +164,11 @@ impl SshConnectServer {
 
         let sudo = if params.sudo { "sudo " } else { "" };
         let signal = params.signal.as_deref().unwrap_or("TERM");
+        // Signal names/numbers only (TERM, KILL, 9, SIGHUP, ...): it is spliced
+        // into the command line unquoted after `-`.
+        if signal.is_empty() || !signal.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(invalid_err(format!("invalid signal '{signal}' (use e.g. TERM, KILL, HUP, 9)")));
+        }
 
         let cmd = match params.action.as_str() {
             "list" => "ps aux --sort=-%cpu | head -30".to_string(),

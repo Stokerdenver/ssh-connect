@@ -7,10 +7,11 @@
 
 use super::{Protocol, Transport};
 use crate::error::{ErrorKind, ToolError, ToolResult};
+use crate::state::{host_key_policy, VpsClientHandler};
 use crate::ssh_config::{self, Credentials};
 use async_trait::async_trait;
 use russh::client::{self, Handle, Msg};
-use russh::keys::{Algorithm, EcdsaCurve, HashAlg, PublicKey};
+use russh::keys::{Algorithm, EcdsaCurve, HashAlg};
 use russh::{cipher, kex, Channel, ChannelMsg, Disconnect, Preferred};
 use russh_sftp::client::SftpSession;
 use std::borrow::Cow;
@@ -67,19 +68,9 @@ fn legacy_compatible_preferred() -> Preferred {
     }
 }
 
-/// russh event handler. We accept any host key (trust-on-first-use): switches
-/// in a management network are reached by address, and host-key pinning is out
-/// of scope for the interactive-console path (the server-ops path in `state.rs`
-/// offers optional TOFU pinning via `VPS_HOST_KEY_CHECK`).
-struct Client;
-
-impl client::Handler for Client {
-    type Error = russh::Error;
-
-    async fn check_server_key(&mut self, _key: &PublicKey) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
+/// Host keys are verified with the same trust-on-first-use policy as the
+/// server-ops path (see [`crate::hostkeys`]); the handler is shared.
+type Client = VpsClientHandler;
 
 /// Parameters needed to establish an SSH session.
 pub struct SshAuth<'a> {
@@ -109,9 +100,14 @@ impl SshTransport {
             ..Default::default()
         });
 
+        let handler = Client {
+            host: auth.host.to_string(),
+            port: auth.port,
+            policy: host_key_policy(),
+        };
         let mut handle = tokio::time::timeout(
             Duration::from_secs(15),
-            client::connect(config, (auth.host, auth.port), Client),
+            client::connect(config, (auth.host, auth.port), handler),
         )
         .await
         .map_err(|_| {
@@ -123,7 +119,7 @@ impl SshTransport {
         .map_err(|e| {
             ToolError::new(
                 ErrorKind::ConnectFailed,
-                format!("ssh connect to {}:{}: {e}", auth.host, auth.port),
+                crate::hostkeys::explain_connect_error(&e, auth.host, auth.port),
             )
         })?;
 

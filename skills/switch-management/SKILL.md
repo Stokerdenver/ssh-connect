@@ -67,15 +67,21 @@ it drives the `enable` → `Password:` handshake in one step and **never echoes 
 password** back in the result:
 
 ```
-enable { session, password: "<enable-pw>" }
+enable { session }                         # saved host: stored enable password is used
+enable { session, password: "<enable-pw>" } # only for devices the user has not saved
 ```
 
 For a console/vty that prompts for a username and/or password after connecting, use
 **`login`** (also non-echoing):
 
 ```
-login { session, username: "admin", password: "<pw>" }   # username optional
+login { session }                                        # saved host: stored credentials
+login { session, username: "admin", password: "<pw>" }   # unsaved device
 ```
+
+Prefer saved hosts (`list_hosts`, then `connect { name }`): their credentials never pass
+through the conversation. If a device is missing, ask the user to add it in
+`ssh-connect ui` instead of asking for its password.
 
 > **Never** put a password in `run_command` — it would be echoed in the result.
 > Use `enable`/`login`. If `run_command` hits any interactive sub-prompt

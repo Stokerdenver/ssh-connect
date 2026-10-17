@@ -13,8 +13,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::config::{HostEntry, Inventory};
 use crate::error::ToolError;
+use crate::paths::{self, Access};
 use crate::server::SshConnectServer;
+use crate::transport::Session;
 use crate::tools::util::{json_result, timeout_or_default};
 use regex::Regex;
 
@@ -43,18 +46,20 @@ pub struct RunCommandsParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EnableParams {
     pub session: String,
-    /// Enable password (never echoed back in the result).
-    pub password: String,
+    /// Enable password (never echoed back). Omit for saved hosts — the stored
+    /// enable password is used.
+    pub password: Option<String>,
     pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LoginParams {
     pub session: String,
-    /// Login username (omit for password-only lines).
+    /// Login username (omit for password-only lines; saved hosts use their user).
     pub username: Option<String>,
-    /// Login password (never echoed back).
-    pub password: String,
+    /// Login password (never echoed back). Omit for saved hosts — the stored
+    /// password is used.
+    pub password: Option<String>,
     pub timeout_secs: Option<u64>,
 }
 
@@ -79,7 +84,7 @@ pub struct RunOnFleetParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UploadConfigParams {
     pub session: String,
-    /// Local file path to upload.
+    /// Local file to upload, relative to the user's transfer folder.
     pub local_path: String,
     /// Destination path on the device.
     pub remote_path: String,
@@ -90,7 +95,7 @@ pub struct DownloadConfigParams {
     pub session: String,
     /// Source path on the device.
     pub remote_path: String,
-    /// Local destination path.
+    /// Local destination, relative to the user's transfer folder.
     pub local_path: String,
 }
 
@@ -149,15 +154,26 @@ impl SshConnectServer {
         Ok(json_result(json!({ "session": params.session, "results": results })))
     }
 
-    #[tool(description = "Enter privileged (enable) mode, supplying the enable password if the device challenges. The password is NEVER echoed back. Drives the 'enable' → Password: handshake in one step.")]
+    #[tool(description = "Enter privileged (enable) mode, supplying the enable password if the device challenges. Omit `password` for saved hosts — the stored enable password is used. The password is NEVER echoed back. Drives the 'enable' → Password: handshake in one step.")]
     async fn enable(
         &self,
         Parameters(params): Parameters<EnableParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let handle = self.sessions.get(&params.session).await?;
         let mut guard = handle.lock().await;
+        let password = match params.password {
+            Some(p) => p,
+            None => saved_entry(&guard)?
+                .and_then(|e| e.resolve_enable_password())
+                .ok_or_else(|| {
+                    ToolError::bad_request(
+                        "no enable password given and none is saved for this session's host. Ask the \
+                         user to add it in `ssh-connect ui` (preferred) or to provide it.",
+                    )
+                })?,
+        };
         let outcome = guard
-            .enable(&params.password, timeout_or_default(params.timeout_secs))
+            .enable(&password, timeout_or_default(params.timeout_secs))
             .await?;
         Ok(json_result(json!({
             "session": params.session,
@@ -168,17 +184,35 @@ impl SshConnectServer {
         })))
     }
 
-    #[tool(description = "Log in over a console/vty that prompts for username and/or password (e.g. after connecting telnet/serial). Secrets are NEVER echoed back.")]
+    #[tool(description = "Log in over a console/vty that prompts for username and/or password (e.g. after connecting telnet/serial). Omit `password` (and `username`) for saved hosts — the stored credentials are used. Secrets are NEVER echoed back.")]
     async fn login(
         &self,
         Parameters(params): Parameters<LoginParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let handle = self.sessions.get(&params.session).await?;
         let mut guard = handle.lock().await;
+        let (username, password) = match params.password {
+            Some(p) => (params.username, p),
+            None => {
+                let entry = saved_entry(&guard)?.ok_or_else(|| {
+                    ToolError::bad_request(
+                        "no password given and this session was not opened from a saved host. Ask \
+                         the user to save the device in `ssh-connect ui` (preferred) or to provide it.",
+                    )
+                })?;
+                let pw = entry.resolve_password().ok_or_else(|| {
+                    ToolError::bad_request(format!(
+                        "no password is saved for '{}'. Ask the user to add it in `ssh-connect ui`.",
+                        entry.name
+                    ))
+                })?;
+                (params.username.or(entry.username.clone()), pw)
+            }
+        };
         let outcome = guard
             .login(
-                params.username.as_deref(),
-                &params.password,
+                username.as_deref(),
+                &password,
                 timeout_or_default(params.timeout_secs),
             )
             .await?;
@@ -261,41 +295,57 @@ impl SshConnectServer {
         Ok(json_result(json!({ "command": command, "results": results })))
     }
 
-    #[tool(description = "Upload a local file to an interactive SSH session over SFTP (firmware, configs). SSH sessions only. Returns bytes transferred.")]
+    #[tool(description = "Upload a local file to an interactive SSH session over SFTP (firmware, configs). SSH sessions only. local_path is relative to the user's transfer folder (default ~/ssh-connect-files); paths outside it are refused. Returns bytes transferred.")]
     async fn upload_config(
         &self,
         Parameters(params): Parameters<UploadConfigParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let local = paths::resolve(&params.local_path, Access::Read).map_err(ToolError::bad_request)?;
         let handle = self.sessions.get(&params.session).await?;
         let mut guard = handle.lock().await;
-        let bytes = guard
-            .upload(std::path::Path::new(&params.local_path), &params.remote_path)
-            .await?;
+        let bytes = guard.upload(&local, &params.remote_path).await?;
         Ok(json_result(json!({
             "uploaded": true,
             "session": params.session,
-            "local_path": params.local_path,
+            "local_path": local.display().to_string(),
             "remote_path": params.remote_path,
             "bytes": bytes,
         })))
     }
 
-    #[tool(description = "Download a remote file (e.g. a saved config) from an interactive SSH session over SFTP to a local path. SSH sessions only. Returns bytes transferred.")]
+    #[tool(description = "Download a remote file (e.g. a saved config) from an interactive SSH session over SFTP into the user's transfer folder (default ~/ssh-connect-files). local_path is relative to that folder. SSH sessions only. Returns bytes transferred.")]
     async fn download_config(
         &self,
         Parameters(params): Parameters<DownloadConfigParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let local = paths::resolve(&params.local_path, Access::Write).map_err(ToolError::bad_request)?;
         let handle = self.sessions.get(&params.session).await?;
         let mut guard = handle.lock().await;
-        let bytes = guard
-            .download(&params.remote_path, std::path::Path::new(&params.local_path))
-            .await?;
+        let bytes = guard.download(&params.remote_path, &local).await?;
         Ok(json_result(json!({
             "downloaded": true,
             "session": params.session,
             "remote_path": params.remote_path,
-            "local_path": params.local_path,
+            "local_path": local.display().to_string(),
             "bytes": bytes,
         })))
+    }
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// The saved host behind `session`, if it was opened from one and the entry
+/// still points where it did at connect time.
+fn saved_entry(session: &Session) -> Result<Option<HostEntry>, ToolError> {
+    let Some(r) = &session.saved_host else {
+        return Ok(None);
+    };
+    match Inventory::load_default().get(&r.name) {
+        Some(e) if e.signature() == r.signature => Ok(Some(e.clone())),
+        Some(_) => Err(ToolError::bad_request(format!(
+            "saved host '{}' was edited after this session was opened; disconnect and connect again",
+            r.name
+        ))),
+        None => Ok(None),
     }
 }

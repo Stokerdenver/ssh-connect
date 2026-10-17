@@ -1,5 +1,5 @@
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -15,8 +15,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::config::Inventory;
+use crate::paths::{self, Access};
 use crate::server::SshConnectServer;
 use crate::ssh_config::{self, Credentials};
+use crate::transport::Protocol;
 use crate::state::{SshConnection, VpsClientHandler, exec_command, host_key_policy};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -38,9 +41,9 @@ fn default_timeout() -> u64 {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct SshConnectParams {
-    /// Hostname, IP, or a Host alias from ~/.ssh/config. Whatever the local
-    /// `ssh -G` resolves for it (HostName/User/Port/IdentityFile) is used, so
-    /// `ssh <alias>` and this tool reach the same machine the same way.
+    /// A saved host name from `list_hosts` (preferred: its address, user and
+    /// stored password are used without you supplying them), or a hostname,
+    /// IP, or Host alias from ~/.ssh/config.
     host: String,
     /// SSH port. Overrides the alias; defaults to 22.
     port: Option<u16>,
@@ -77,7 +80,8 @@ struct SshExecParams {
 struct SshUploadParams {
     /// Active connection ID from ssh_connect
     connection_id: String,
-    /// Local file path to upload
+    /// Local file to upload, relative to the user's transfer folder
+    /// (absolute paths must point inside it).
     local_path: String,
     /// Destination path on the remote server
     remote_path: String,
@@ -90,7 +94,8 @@ struct SshDownloadParams {
     connection_id: String,
     /// Source path on the remote server
     remote_path: String,
-    /// Local destination path
+    /// Local destination, relative to the user's transfer folder (absolute
+    /// paths must point inside it). Parent folders are created.
     local_path: String,
 }
 
@@ -114,32 +119,76 @@ struct SshDisconnectParams {
 
 #[tool_router(router = ssh_tool_router, vis = "pub(crate)")]
 impl SshConnectServer {
-    #[tool(description = "Connect to a remote server via SSH. Returns a connectionId used in all subsequent commands. `host` may be a Host alias from ~/.ssh/config: HostName/User/Port/IdentityFile come from the local `ssh -G`, so username defaults to the local account exactly as with `ssh`. Authenticates with password, private key, or ssh-agent (tried in that order).")]
+    #[tool(description = "Connect to a remote server via SSH. Returns a connectionId used in all subsequent commands. Prefer a saved host: call list_hosts and pass its name as `host` — the saved address, port, user and stored password/key are used and you never need the password. Otherwise `host` may be an address or a ~/.ssh/config alias (HostName/User/Port/IdentityFile come from the local `ssh -G`). Authenticates with password, private key, or ssh-agent (tried in that order). A saved host's address and port cannot be overridden.")]
     async fn ssh_connect(
         &self,
         Parameters(params): Parameters<SshConnectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        // ~/.ssh/config supplies whatever the caller left out; explicit
-        // arguments always win.
-        let defaults = ssh_config::lookup(&params.host).await;
-        let host = defaults.hostname.unwrap_or_else(|| params.host.clone());
-        let port = params.port.or(defaults.port).unwrap_or(22);
+        // A saved inventory host wins over everything else; ~/.ssh/config fills
+        // whatever neither the caller nor the inventory supplied.
+        let inventory = Inventory::load_default();
+        let saved = inventory
+            .get(&params.host)
+            .filter(|e| e.protocol == Protocol::Ssh)
+            .cloned();
+        let alias = saved
+            .as_ref()
+            .and_then(|e| e.host.clone())
+            .unwrap_or_else(|| params.host.clone());
+        let defaults = ssh_config::lookup(&alias).await;
+        let host = defaults.hostname.clone().unwrap_or_else(|| alias.clone());
+        let resolved_port = saved
+            .as_ref()
+            .and_then(|e| e.port)
+            .or(defaults.port)
+            .unwrap_or(22);
+        let port = match (&saved, params.port) {
+            // A saved host is pinned: its stored password must only ever reach
+            // the address the user saved it for.
+            (Some(e), Some(p)) if p != resolved_port => {
+                return Err(invalid_err(format!(
+                    "'{}' is a saved host on port {resolved_port}; its port cannot be overridden. \
+                     Ask the user to change it in `ssh-connect ui`, or connect by address instead.",
+                    e.name
+                )));
+            }
+            (_, Some(p)) => p,
+            (_, None) => resolved_port,
+        };
+        let saved_user = saved.as_ref().and_then(|e| e.username.clone());
         let username = params
             .username
+            .clone()
+            .or(saved_user.clone())
             .or(defaults.username)
             .ok_or_else(|| {
                 invalid_err(format!(
-                    "no username for '{}': pass 'username', set User for this host in ~/.ssh/config, or set USER/USERNAME in the environment",
+                    "no username for '{}': pass 'username', save one in `ssh-connect ui`, set User for this host in ~/.ssh/config, or set USER/USERNAME in the environment",
                     params.host
                 ))
             })?;
+        // Stored secrets belong to the saved user; a different user must bring
+        // its own credentials.
+        let use_saved_secrets =
+            saved.is_some() && saved_user.as_deref().map_or(true, |u| u == username);
 
-        // Explicit key first, then the alias's IdentityFile entries.
+        // Explicit key first, then the saved key, then the alias's IdentityFile entries.
         let mut identity_files: Vec<PathBuf> = Vec::new();
         if let Some(path) = params.private_key_path.as_deref() {
             identity_files.push(PathBuf::from(path));
         }
+        if let Some(k) = saved.as_ref().and_then(|e| e.key_path.clone()) {
+            identity_files.push(k);
+        }
         identity_files.extend(defaults.identity_files);
+
+        let (password, passphrase) = match (&saved, use_saved_secrets) {
+            (Some(e), true) => (
+                params.password.or_else(|| e.resolve_password()),
+                params.passphrase.or_else(|| e.resolve_passphrase()),
+            ),
+            _ => (params.password, params.passphrase),
+        };
 
         let config = Arc::new(client::Config::default());
         let addr = format!("{host}:{port}");
@@ -152,15 +201,15 @@ impl SshConnectServer {
 
         let mut session = client::connect(config, addr.as_str(), handler)
             .await
-            .map_err(|e| internal_err(format!("SSH connect to {addr}: {e}")))?;
+            .map_err(|e| internal_err(crate::hostkeys::explain_connect_error(&e, &host, port)))?;
 
         let used = ssh_config::authenticate(
             &mut session,
             Credentials {
                 username: username.clone(),
-                password: params.password,
+                password,
                 identity_files,
-                passphrase: params.passphrase,
+                passphrase,
                 use_agent: params.use_agent.unwrap_or(true),
             },
         )
@@ -186,8 +235,12 @@ impl SshConnectServer {
             )
             .await;
 
+        let via = saved
+            .as_ref()
+            .map(|e| format!(" (saved host '{}')", e.name))
+            .unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Connected to {username}@{host}:{port} using {used}\nConnection ID: {conn_id}"
+            "Connected to {username}@{host}:{port}{via} using {used}\nConnection ID: {conn_id}"
         ))]))
     }
 
@@ -221,7 +274,7 @@ impl SshConnectServer {
         ))]))
     }
 
-    #[tool(description = "Upload a local file to the remote server via SFTP.")]
+    #[tool(description = "Upload a local file to the remote server via SFTP. local_path is relative to the user's transfer folder (default ~/ssh-connect-files); paths outside it are refused.")]
     async fn ssh_upload_file(
         &self,
         Parameters(params): Parameters<SshUploadParams>,
@@ -234,9 +287,13 @@ impl SshConnectServer {
                 invalid_err(format!("No active connection: '{}'", params.connection_id))
             })?;
 
-        let local_data = tokio::fs::read(&params.local_path)
+        let local = paths::resolve(&params.local_path, Access::Read).map_err(invalid_err)?;
+        if !local.is_file() {
+            return Err(invalid_err(format!("'{}' is not a file", local.display())));
+        }
+        let local_data = tokio::fs::read(&local)
             .await
-            .map_err(|e| internal_err(format!("Cannot read '{}': {}", params.local_path, e)))?;
+            .map_err(|e| internal_err(format!("Cannot read '{}': {}", local.display(), e)))?;
 
         let mut conn = conn_arc.lock().await;
         let sftp = open_sftp(&mut conn.handle).await?;
@@ -257,13 +314,13 @@ impl SshConnectServer {
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Uploaded '{}' ({} bytes) → '{}'",
-            params.local_path,
+            local.display(),
             local_data.len(),
             params.remote_path
         ))]))
     }
 
-    #[tool(description = "Download a file from the remote server via SFTP. Creates local parent directories as needed.")]
+    #[tool(description = "Download a file from the remote server via SFTP into the user's transfer folder (default ~/ssh-connect-files). local_path is relative to that folder; parent folders are created; paths outside it are refused.")]
     async fn ssh_download_file(
         &self,
         Parameters(params): Parameters<SshDownloadParams>,
@@ -275,6 +332,8 @@ impl SshConnectServer {
             .ok_or_else(|| {
                 invalid_err(format!("No active connection: '{}'", params.connection_id))
             })?;
+
+        let local = paths::resolve(&params.local_path, Access::Write).map_err(invalid_err)?;
 
         let mut conn = conn_arc.lock().await;
         let sftp = open_sftp(&mut conn.handle).await?;
@@ -290,23 +349,15 @@ impl SshConnectServer {
             .await
             .map_err(|e| internal_err(format!("Read failed: {e}")))?;
 
-        if let Some(parent) = Path::new(&params.local_path).parent() {
-            if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| internal_err(format!("Cannot create local dir: {e}")))?;
-            }
-        }
-
-        tokio::fs::write(&params.local_path, &buf)
+        tokio::fs::write(&local, &buf)
             .await
-            .map_err(|e| internal_err(format!("Cannot write '{}': {}", params.local_path, e)))?;
+            .map_err(|e| internal_err(format!("Cannot write '{}': {}", local.display(), e)))?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Downloaded '{}' ({} bytes) → '{}'",
             params.remote_path,
             buf.len(),
-            params.local_path
+            local.display()
         ))]))
     }
 

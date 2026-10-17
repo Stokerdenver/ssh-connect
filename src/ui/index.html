@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSH-Connect — хосты</title>
+<style>
+:root {
+  --bg: #161616; --card: #1f1f1f; --field: #191919; --line: #2e2e2e; --line-strong: #3a3a3a;
+  --text: #ececec; --muted: #9a9a9a; --faint: #6f6f6f;
+  --accent: #3b6cff; --accent-text: #fff; --ok: #3fb27f; --bad: #e5604f; --warn: #d9a23a;
+  --chip: #262626; --chip-active: #33363d;
+  --radius: 10px; --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f4f2; --card: #ffffff; --field: #fafaf9; --line: #e3e3e0; --line-strong: #d2d2ce;
+    --text: #1d1d1b; --muted: #6b6b66; --faint: #9a9a94; --chip: #f0f0ee; --chip-active: #e2e6f3;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 28px 16px 48px; }
+h1 { font-size: 18px; margin: 0 0 4px; font-weight: 650; }
+.sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+.sub code, .meta code { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 16px; }
+.card h2 { font-size: 15px; margin: 0; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; background: var(--chip); color: var(--text);
+  border: 1px solid transparent; border-radius: 999px; padding: 7px 14px; cursor: pointer; font: inherit; font-size: 13px; }
+.chip:hover { border-color: var(--line-strong); }
+.chip.active { background: var(--chip-active); border-color: var(--accent); }
+.chip .ico { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.chip .dot.on { background: var(--ok); }
+.chip.add { color: var(--muted); border: 1px dashed var(--line-strong); background: transparent; }
+.empty { color: var(--muted); font-size: 13px; margin: 12px 0 4px; }
+.head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.iconbtn { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 6px; border-radius: 8px; }
+.iconbtn:hover { color: var(--bad); background: var(--chip); }
+.grid { display: grid; grid-template-columns: 1.3fr 1.3fr .6fr 1.1fr; gap: 12px; margin-top: 16px; }
+.grid.serial { grid-template-columns: 1.3fr 1fr 1fr; }
+label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+input, select { width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); padding: 9px 11px; font: inherit; outline: none; }
+input:focus, select:focus { border-color: var(--accent); }
+input::placeholder { color: var(--faint); }
+.full { margin-top: 12px; }
+.seg { display: inline-flex; background: var(--field); border: 1px solid var(--line-strong); border-radius: 10px; padding: 3px; gap: 2px; }
+.seg button { background: none; border: 0; color: var(--muted); padding: 6px 14px; border-radius: 7px; cursor: pointer; font: inherit; font-size: 13px; }
+.seg button.on { background: var(--chip-active); color: var(--text); font-weight: 600; }
+.row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.linkbtn { background: none; border: 0; color: var(--muted); text-decoration: underline; cursor: pointer; font: inherit; font-size: 12px; padding: 0; }
+.linkbtn:hover { color: var(--bad); }
+.cleared { color: var(--warn); }
+details { margin-top: 14px; }
+summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 18px; }
+.btn { background: var(--chip); color: var(--text); border: 1px solid var(--line-strong); border-radius: 9px;
+  padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+.btn:disabled { opacity: .5; cursor: default; }
+.status { margin-top: 14px; font-size: 13px; padding: 10px 12px; border-radius: 9px; background: var(--field);
+  border: 1px solid var(--line); display: none; white-space: pre-wrap; word-break: break-word; }
+.status.show { display: block; }
+.status.ok { border-color: var(--ok); }
+.status.bad { border-color: var(--bad); }
+.fp { font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; }
+.meta { color: var(--muted); font-size: 12.5px; line-height: 1.8; margin-top: 10px; }
+.badge { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--chip); color: var(--muted); font-weight: 500; }
+.badge.ok { color: var(--ok); }
+.settings-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-top: 14px; }
+footer { display: flex; justify-content: space-between; align-items: center; color: var(--faint); font-size: 12px; margin-top: 8px; }
+@media (max-width: 640px) {
+  .grid, .grid.serial, .settings-grid { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>SSH-Connect</h1>
+  <p class="sub">Хосты, к которым агент подключается по имени. Пароли хранятся в <span id="backend">…</span> и никогда не попадают в чат.</p>
+
+  <section class="card">
+    <div class="head"><h2>SSH <span class="badge" id="count"></span></h2></div>
+    <div class="chips" id="chips"></div>
+    <div class="empty" id="empty" hidden>Пока нет сохранённых хостов — добавьте первый.</div>
+  </section>
+
+  <section class="card" id="editor">
+    <div class="head">
+      <h2><span style="font-family:var(--mono);color:var(--muted)">&gt;_</span> <span id="editor-title">Новый хост</span></h2>
+      <button class="iconbtn" id="delete" title="Удалить хост" hidden>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>
+      </button>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <div class="seg" id="proto">
+        <button data-v="ssh" class="on">SSH</button><button data-v="telnet">Telnet</button><button data-v="serial">COM-порт</button>
+      </div>
+    </div>
+
+    <div class="grid" id="net-grid">
+      <div><label for="f-name">Название <span style="color:var(--faint)">— так его видит агент</span></label><input id="f-name" placeholder="например, qa1" autocomplete="off"></div>
+      <div><label for="f-host">Хост</label><input id="f-host" placeholder="Hostname или IP" autocomplete="off"></div>
+      <div><label for="f-port">Порт</label><input id="f-port" inputmode="numeric" placeholder="22" autocomplete="off"></div>
+      <div><label for="f-user">Пользователь</label><input id="f-user" placeholder="SSH user" autocomplete="off"></div>
+    </div>
+    <div class="grid serial" id="serial-grid" hidden>
+      <div><label for="f-name2">Название <span style="color:var(--faint)">— так его видит агент</span></label><input id="f-name2" placeholder="например, console-a" autocomplete="off"></div>
+      <div><label for="f-com">COM-порт</label><input id="f-com" placeholder="COM3" autocomplete="off"></div>
+      <div><label for="f-baud">Скорость</label><input id="f-baud" inputmode="numeric" placeholder="9600" autocomplete="off"></div>
+    </div>
+    <div class="full"><label for="f-desc">Описание для агента <span style="color:var(--faint)">(необязательно)</span></label>
+      <input id="f-desc" placeholder="Например: тестовый стенд m300, ветка 4.2" autocomplete="off"></div>
+
+    <div class="row" id="auth-tabs-row">
+      <div class="seg" id="auth">
+        <button data-v="password" class="on">Пароль</button><button data-v="key">Приватный ключ</button>
+      </div>
+    </div>
+    <div id="pw-block" class="full">
+      <label for="f-pass" id="pw-label" hidden>Пароль для входа <span style="color:var(--faint)">(используется инструментом login)</span></label>
+      <input id="f-pass" type="password" placeholder="Пароль SSH" autocomplete="new-password">
+      <div class="hint" id="pw-hint"></div>
+    </div>
+    <div id="key-block" class="full" hidden>
+      <div class="grid" style="grid-template-columns:2fr 1fr;margin-top:0">
+        <div><label for="f-key">Путь к ключу</label><input id="f-key" placeholder="C:\Users\you\.ssh\id_ed25519" autocomplete="off"></div>
+        <div><label for="f-phrase">Пароль ключа</label><input id="f-phrase" type="password" placeholder="если ключ зашифрован" autocomplete="new-password"></div>
+      </div>
+      <div class="hint" id="phrase-hint"></div>
+    </div>
+
+    <details id="adv">
+      <summary>Дополнительно</summary>
+      <div class="grid" style="grid-template-columns:1fr 1fr">
+        <div><label for="f-enable">Enable-пароль <span style="color:var(--faint)">(коммутаторы)</span></label>
+          <input id="f-enable" type="password" placeholder="для режима enable" autocomplete="new-password">
+          <div class="hint" id="enable-hint"></div></div>
+        <div><label for="f-prompt">Шаблон приглашения (regex)</label>
+          <input id="f-prompt" placeholder="по умолчанию — автоопределение" autocomplete="off"></div>
+      </div>
+      <div class="hint" id="fp-line" style="margin-top:12px"></div>
+    </details>
+
+    <div class="status" id="status" role="status"></div>
+    <div class="actions">
+      <button class="btn" id="forget" hidden>Забыть ключ хоста</button>
+      <button class="btn" id="test" hidden>Проверить подключение</button>
+      <button class="btn primary" id="save">Сохранить</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Настройки</h2>
+    <div class="settings-grid">
+      <div><label for="s-dir">Папка для обмена файлами</label>
+        <input id="s-dir" autocomplete="off">
+        <div class="hint">Инструменты загрузки и скачивания работают только внутри неё.</div></div>
+      <div><label for="s-hk">Проверка ключей хостов</label>
+        <select id="s-hk"><option value="tofu">Запоминать и сверять (TOFU)</option><option value="off">Отключена</option></select></div>
+    </div>
+    <div class="hint" id="env-note"></div>
+    <div class="actions"><button class="btn" id="s-save">Сохранить настройки</button></div>
+    <div class="status" id="s-status"></div>
+    <div class="meta" id="meta"></div>
+  </section>
+
+  <footer><span>Изменения действуют для агента сразу, без перезапуска Claude.</span>
+    <button class="linkbtn" id="stop">Остановить интерфейс</button></footer>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  // Token: from the link printed in the console (#token=...), kept for this tab only.
+  const fromHash = new URLSearchParams(location.hash.slice(1)).get('token');
+  let token = null;
+  try {
+    if (fromHash) sessionStorage.setItem('sshc-token', fromHash);
+    token = fromHash || sessionStorage.getItem('sshc-token');
+  } catch (_) { token = fromHash; }
+  if (fromHash) history.replaceState(null, '', location.pathname);
+
+  async function api(method, path, body) {
+    const res = await fetch(path, {
+      method,
+      headers: Object.assign({ 'Authorization': 'Bearer ' + token },
+        body ? { 'Content-Type': 'application/json' } : {}),
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  }
+
+  let state = { hosts: [] };
+  let current = null;     // name of the host being edited, or null for a new one
+  let proto = 'ssh', auth = 'password';
+  let clear = { password: false, passphrase: false, enable: false };
+
+  function status(el, text, kind) {
+    el.textContent = text;
+    el.className = 'status show ' + (kind || '');
+  }
+  function hideStatus(el) { el.className = 'status'; el.textContent = ''; }
+
+  function setSeg(seg, value) {
+    for (const b of seg.querySelectorAll('button')) b.classList.toggle('on', b.dataset.v === value);
+  }
+
+  function applyMode() {
+    setSeg($('proto'), proto); setSeg($('auth'), auth);
+    const serial = proto === 'serial';
+    $('net-grid').hidden = serial; $('serial-grid').hidden = !serial;
+    $('auth-tabs-row').hidden = proto !== 'ssh';
+    const keyMode = proto === 'ssh' && auth === 'key';
+    $('pw-block').hidden = keyMode; $('key-block').hidden = !keyMode;
+    $('pw-label').hidden = proto === 'ssh';
+    $('f-port').placeholder = proto === 'telnet' ? '23' : '22';
+    $('f-user').placeholder = proto === 'telnet' ? 'логин' : 'SSH user';
+    $('f-pass').placeholder = proto === 'ssh' ? 'Пароль SSH' : 'Пароль для входа (login)';
+    const saved = current !== null;
+    $('test').hidden = !saved;
+    $('forget').hidden = !(saved && proto === 'ssh');
+    renderSecretHints();
+  }
+
+  function hostByName(n) { return state.hosts.find(h => h.name === n); }
+
+  function secretHint(el, input, has, kind, label) {
+    el.textContent = '';
+    if (clear[kind]) {
+      const s = document.createElement('span'); s.className = 'cleared';
+      s.textContent = label + ' будет удалён при сохранении. ';
+      const undo = document.createElement('button'); undo.className = 'linkbtn'; undo.textContent = 'Отменить';
+      undo.onclick = () => { clear[kind] = false; renderSecretHints(); };
+      el.append(s, undo);
+      return;
+    }
+    if (has) {
+      input.placeholder = 'Сохранён · введите новый, чтобы заменить';
+      const s = document.createElement('span'); s.textContent = label + ' сохранён. ';
+      const del = document.createElement('button'); del.className = 'linkbtn'; del.textContent = 'Удалить';
+      del.onclick = () => { clear[kind] = true; input.value = ''; renderSecretHints(); };
+      el.append(s, del);
+    }
+  }
+
+  function renderSecretHints() {
+    const h = current !== null ? hostByName(current) : null;
+    secretHint($('pw-hint'), $('f-pass'), h && h.has_password, 'password', 'Пароль');
+    secretHint($('phrase-hint'), $('f-phrase'), h && h.has_passphrase, 'passphrase', 'Пароль ключа');
+    secretHint($('enable-hint'), $('f-enable'), h && h.has_enable, 'enable', 'Enable-пароль');
+    const keyMode = proto === 'ssh' && auth === 'key';
+    if (h && keyMode && h.has_password && !clear.password) {
+      $('phrase-hint').append(' При сохранении с ключом сохранённый пароль входа будет удалён.');
+    }
+    if (h && !keyMode && h.has_passphrase && !clear.passphrase) {
+      $('pw-hint').append(' При сохранении с паролем сохранённый пароль ключа будет удалён.');
+    }
+    if (h && h.legacy_plaintext_password) {
+      $('pw-hint').append(' Пароль сейчас лежит открытым текстом в hosts.toml — при сохранении он переедет в защищённое хранилище.');
+    }
+    const fp = $('fp-line'); fp.textContent = '';
+    if (h && proto === 'ssh') {
+      if (h.host_key) {
+        fp.append('Сохранённый ключ хоста: ');
+        const c = document.createElement('span'); c.className = 'fp'; c.textContent = h.host_key; fp.append(c);
+      } else {
+        fp.textContent = 'Ключ хоста ещё не сохранён — он запомнится при первом подключении.';
+      }
+    }
+  }
+
+  function renderChips() {
+    const box = $('chips'); box.textContent = '';
+    $('count').textContent = state.hosts.length ? String(state.hosts.length) : '';
+    $('empty').hidden = state.hosts.length > 0;
+    for (const h of state.hosts) {
+      const b = document.createElement('button');
+      b.className = 'chip' + (h.name === current ? ' active' : '');
+      const ico = document.createElement('span'); ico.className = 'ico';
+      ico.textContent = h.protocol === 'serial' ? '⎍' : '>_';
+      const name = document.createElement('span'); name.textContent = h.name;
+      const dot = document.createElement('span');
+      const ready = h.has_password || h.key_path || h.protocol === 'serial';
+      dot.className = 'dot' + (ready ? ' on' : '');
+      dot.title = h.key_path ? 'вход по ключу' : (h.has_password ? 'пароль сохранён' : 'пароль не сохранён');
+      b.title = [h.protocol.toUpperCase(), h.host || h.serial_port, h.description].filter(Boolean).join(' · ');
+      b.append(ico, name, dot);
+      b.onclick = () => edit(h.name);
+      box.append(b);
+    }
+    const add = document.createElement('button');
+    add.className = 'chip add' + (current === null ? ' active' : '');
+    add.textContent = '+ Новый хост';
+    add.onclick = () => edit(null);
+    box.append(add);
+  }
+
+  function fill(h) {
+    const v = (x) => (x === null || x === undefined) ? '' : String(x);
+    $('f-name').value = v(h && h.name); $('f-name2').value = v(h && h.name);
+    $('f-host').value = v(h && h.host); $('f-port').value = v(h && h.port);
+    $('f-user').value = v(h && h.username); $('f-desc').value = v(h && h.description);
+    $('f-com').value = v(h && h.serial_port); $('f-baud').value = v(h && h.baud);
+    $('f-key').value = v(h && h.key_path); $('f-prompt').value = v(h && h.prompt);
+    $('f-pass').value = ''; $('f-phrase').value = ''; $('f-enable').value = '';
+    $('f-pass').placeholder = 'Пароль SSH'; $('f-phrase').placeholder = 'если ключ зашифрован';
+    $('f-enable').placeholder = 'для режима enable';
+  }
+
+  function edit(name) {
+    current = name;
+    clear = { password: false, passphrase: false, enable: false };
+    const h = name !== null ? hostByName(name) : null;
+    proto = h ? h.protocol : 'ssh';
+    auth = h && h.key_path ? 'key' : 'password';
+    fill(h);
+    $('editor-title').textContent = h ? h.name : 'Новый хост';
+    $('delete').hidden = !h;
+    $('adv').open = !!(h && (h.has_enable || h.prompt));
+    hideStatus($('status'));
+    renderChips(); applyMode();
+  }
+
+  async function load(keep) {
+    try {
+      state = await api('GET', '/api/state');
+    } catch (e) {
+      status($('status'), 'Нет связи с SSH-Connect: ' + e.message +
+        '\nОткройте ссылку из окна консоли заново.', 'bad');
+      return;
+    }
+    $('backend').textContent = state.secret_backend;
+    const s = state.settings;
+    $('s-dir').value = s.transfer_dir || '';
+    $('s-dir').placeholder = s.transfer_dir_effective;
+    $('s-hk').value = s.host_key_check === 'off' ? 'off' : 'tofu';
+    const notes = [];
+    if (s.transfer_dir_env) notes.push('Переменная SSHCONNECT_TRANSFER_DIR задана и перекрывает папку: ' + s.transfer_dir_env);
+    if (s.host_key_check_env) notes.push('Переменная SSHCONNECT_HOST_KEY_CHECK=' + s.host_key_check_env + ' перекрывает проверку ключей.');
+    $('env-note').textContent = notes.join(' ');
+    const meta = $('meta'); meta.textContent = '';
+    for (const [k, val] of [['Список хостов', state.inventory_path], ['Ключи хостов', state.known_hosts],
+                            ['Сейчас папка для файлов', s.transfer_dir_effective]]) {
+      const line = document.createElement('div');
+      const c = document.createElement('code'); c.textContent = val;
+      line.append(k + ': ', c); meta.append(line);
+    }
+    if (keep !== undefined) edit(keep && hostByName(keep) ? keep : null);
+    else edit(null);
+  }
+
+  $('proto').onclick = (e) => { const v = e.target.dataset && e.target.dataset.v; if (v) { proto = v; applyMode(); } };
+  $('auth').onclick = (e) => { const v = e.target.dataset && e.target.dataset.v; if (v) { auth = v; applyMode(); } };
+  $('f-name').oninput = () => { $('f-name2').value = $('f-name').value; };
+  $('f-name2').oninput = () => { $('f-name').value = $('f-name2').value; };
+
+  $('save').onclick = async () => {
+    const serial = proto === 'serial';
+    const body = {
+      previous_name: current,
+      auth: proto === 'ssh' ? auth : 'password',
+      entry: {
+        name: (serial ? $('f-name2') : $('f-name')).value.trim(),
+        description: $('f-desc').value,
+        protocol: proto,
+        host: serial ? null : $('f-host').value,
+        port: serial ? null : $('f-port').value,
+        username: serial ? null : $('f-user').value,
+        key_path: $('f-key').value,
+        serial_port: serial ? $('f-com').value : null,
+        baud: serial ? $('f-baud').value : null,
+        prompt: $('f-prompt').value,
+      },
+      password: $('f-pass').value || null, clear_password: clear.password,
+      passphrase: $('f-phrase').value || null, clear_passphrase: clear.passphrase,
+      enable_password: $('f-enable').value || null, clear_enable: clear.enable,
+    };
+    $('save').disabled = true;
+    try {
+      const r = await api('POST', '/api/hosts/save', body);
+      await load(r.name);
+      status($('status'), 'Сохранено. Агент может подключаться к «' + r.name + '» по имени.', 'ok');
+    } catch (e) {
+      status($('status'), e.message, 'bad');
+    } finally { $('save').disabled = false; }
+  };
+
+  $('delete').onclick = async () => {
+    if (current === null) return;
+    if (!confirm('Удалить «' + current + '» и его сохранённые пароли?')) return;
+    try { await api('POST', '/api/hosts/delete', { name: current }); await load(null); }
+    catch (e) { status($('status'), e.message, 'bad'); }
+  };
+
+  $('test').onclick = async () => {
+    if (current === null) return;
+    $('test').disabled = true;
+    status($('status'), 'Подключаюсь…', '');
+    try {
+      const r = await api('POST', '/api/hosts/test', { name: current });
+      let msg = r.message;
+      if (r.fingerprint) msg += '\nКлюч хоста: ' + r.fingerprint;
+      status($('status'), msg, r.ok ? 'ok' : 'bad');
+      if (r.ok) { const keep = current; state = await api('GET', '/api/state'); current = keep; renderSecretHints(); }
+    } catch (e) { status($('status'), e.message, 'bad'); }
+    finally { $('test').disabled = false; }
+  };
+
+  $('forget').onclick = async () => {
+    if (current === null) return;
+    if (!confirm('Забыть сохранённый ключ хоста «' + current + '»? Следующее подключение запомнит новый ключ — делайте это, только если устройство переустанавливали.')) return;
+    try {
+      const r = await api('POST', '/api/hosts/forget-key', { name: current });
+      const keep = current; state = await api('GET', '/api/state'); current = keep; renderSecretHints();
+      status($('status'), r.removed ? 'Ключ для ' + r.target + ' забыт.' : 'Для ' + r.target + ' ключ не был сохранён.', 'ok');
+    } catch (e) { status($('status'), e.message, 'bad'); }
+  };
+
+  $('s-save').onclick = async () => {
+    try {
+      const r = await api('POST', '/api/settings', { transfer_dir: $('s-dir').value, host_key_check: $('s-hk').value });
+      await load(current);
+      status($('s-status'), 'Настройки сохранены. Папка для файлов: ' + r.transfer_dir_effective, 'ok');
+    } catch (e) { status($('s-status'), e.message, 'bad'); }
+  };
+
+  $('stop').onclick = async () => {
+    try { await api('POST', '/api/shutdown'); } catch (_) {}
+    document.body.innerHTML = '<main><p class="sub">Интерфейс остановлен. Окно можно закрыть.</p></main>';
+  };
+
+  if (!token) {
+    status($('status'), 'Откройте эту страницу по ссылке из окна консоли SSH-Connect (в ней есть ключ доступа).', 'bad');
+  } else {
+    load();
+  }
+})();
+</script>
+</body>
+</html>

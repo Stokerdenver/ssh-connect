@@ -122,8 +122,16 @@ impl SshConnectServer {
         let sudo = if params.sudo { "sudo " } else { "" };
 
         // Helpers that require a site name
+        // Site names become paths under /etc/nginx/sites-*; a plain file name
+        // only, so `../` cannot reach other files through `sudo cp`/`rm`.
         let require_site = |p: &NginxConfigParams| -> Result<String, ErrorData> {
-            p.site.clone().ok_or_else(|| invalid_err("'site' is required for this action"))
+            let site = p.site.clone().ok_or_else(|| invalid_err("'site' is required for this action"))?;
+            if !valid_site_name(&site) {
+                return Err(invalid_err(format!(
+                    "invalid site name '{site}': use letters, digits, '.', '_' and '-' only"
+                )));
+            }
+            Ok(site)
         };
 
         match params.action.as_str() {
@@ -194,10 +202,22 @@ impl SshConnectServer {
                 })?;
 
                 let remote_path = format!("/etc/nginx/sites-available/{}", site);
-                let tmp_path = format!("/tmp/.nginx_cfg_{}", site);
 
-                // Write to /tmp first, then sudo-copy to sites-available
+                // Write to a private temp file first, then sudo-copy to
+                // sites-available. mktemp avoids a predictable /tmp name that
+                // another local user could pre-create as a symlink.
                 let mut conn = conn_arc.lock().await;
+                let (code, out, err) = exec_command(
+                    &mut conn.handle,
+                    "mktemp /tmp/ssh-connect-nginx.XXXXXXXX",
+                    15_000,
+                )
+                .await
+                .map_err(|e| internal_err(e.to_string()))?;
+                let tmp_path = out.trim().to_string();
+                if code != 0 || !tmp_path.starts_with("/tmp/ssh-connect-nginx.") {
+                    return Err(internal_err(format!("mktemp failed: {err}")));
+                }
 
                 let sftp = open_sftp(&mut conn.handle).await?;
                 let mut f = sftp.create(&tmp_path).await
@@ -264,4 +284,27 @@ async fn open_sftp(
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn valid_site_name(site: &str) -> bool {
+    !site.is_empty()
+        && site != "."
+        && site != ".."
+        && site.len() <= 255
+        && site.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_site_name;
+
+    #[test]
+    fn site_names() {
+        assert!(valid_site_name("example.com"));
+        assert!(valid_site_name("default"));
+        assert!(!valid_site_name("../../etc/cron.d/x"));
+        assert!(!valid_site_name(".."));
+        assert!(!valid_site_name("a b"));
+        assert!(!valid_site_name("a;rm"));
+    }
 }

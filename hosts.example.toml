@@ -1,22 +1,24 @@
-# SSH-Connect host inventory.
+# SSH-Connect host inventory — example.
 #
-# Copy this file to `hosts.toml` (gitignored) and edit. Each [[host]] block names
-# a device you can reach by `name` alone via the `connect` tool — explicit
-# arguments to `connect` override these defaults. (This inventory is for the
-# interactive console tools; the server-ops `ssh_connect` tool takes its host
-# arguments directly.)
+# Easiest: run `ssh-connect ui` and add hosts there. To edit by hand, copy this
+# file to ~/.ssh-connect/hosts.toml (%USERPROFILE%\.ssh-connect\hosts.toml on
+# Windows) or point SSHCONNECT_HOSTS at it. The current directory is never used.
+#
+# Each [[host]] block names a device the agent reaches by `name` alone:
+# ssh_connect {host: "<name>"} or connect {name: "<name>"}. A saved host's
+# address, port and protocol cannot be overridden by tool arguments.
 #
 # Hosts that already live in ~/.ssh/config need no entry here at all: both
 # connect tools resolve a matching Host alias (HostName/User/Port/IdentityFile)
-# and authenticate through ssh-agent. Precedence is
-# explicit argument > this inventory > ~/.ssh/config.
+# and authenticate through ssh-agent.
 #
-# Point at a different file with the SSHCONNECT_HOSTS environment variable.
+# Secrets never go in this file: the UI stores them in the Windows Credential
+# Manager. Env overrides also work — for "core-sw-01":
+# SSHCONNECT_CORE_SW_01_PASSWORD (name upper-cased, non-alphanumerics -> "_").
 #
-# Secrets: prefer environment variables over committing passwords. For a host
-# named "core-sw-01", the password override is SSHCONNECT_CORE_SW_01_PASSWORD
-# (name upper-cased, non-alphanumerics collapsed to "_"). The same pattern works
-# for USERNAME, HOST, PORT, and KEY_PATH.
+# [settings]
+# transfer_dir   = "C:/Users/you/ssh-connect-files"  # local folder for file tools
+# host_key_check = "tofu"                            # or "off"
 
 # SSH switch authenticated with a private key.
 [[host]]
@@ -28,8 +30,7 @@ username = "admin"
 key_path = "C:/Users/you/.ssh/lab_ed25519"
 # prompt = "core-sw-01#"        # optional explicit prompt regex
 
-# SSH switch authenticated with a password (supply via env, not here):
-#   $env:SSHCONNECT_EDGE_SW_02_PASSWORD = "secret"
+# SSH switch authenticated with a password (saved in the UI, not here).
 [[host]]
 name     = "edge-sw-02"
 host     = "10.0.0.3"

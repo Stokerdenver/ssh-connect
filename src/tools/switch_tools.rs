@@ -58,7 +58,8 @@ pub struct BackupConfigParams {
     pub session: String,
     /// Command that prints the configuration (default "show running-config").
     pub command: Option<String>,
-    /// Optional local file path to write the captured config to.
+    /// Optional local file to write the captured config to, relative to the
+    /// user's transfer folder (e.g. "backups/core-sw-01.cfg").
     pub save_to: Option<String>,
     /// Timeout in seconds for the capture (default 60 — configs can be large).
     pub timeout_secs: Option<u64>,
@@ -126,10 +127,12 @@ impl SshConnectServer {
 
         let mut saved_to = None;
         if let Some(path) = &params.save_to {
-            tokio::fs::write(path, outcome.output.as_bytes())
+            let local = crate::paths::resolve(path, crate::paths::Access::Write)
+                .map_err(ToolError::bad_request)?;
+            tokio::fs::write(&local, outcome.output.as_bytes())
                 .await
-                .map_err(|e| ToolError::internal(format!("write backup to '{path}': {e}")))?;
-            saved_to = Some(path.clone());
+                .map_err(|e| ToolError::internal(format!("write backup to '{}': {e}", local.display())))?;
+            saved_to = Some(local.display().to_string());
         }
 
         Ok(json_result(json!({

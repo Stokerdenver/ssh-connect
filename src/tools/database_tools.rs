@@ -111,15 +111,15 @@ impl SshConnectServer {
             "create-db" => {
                 let db = require_db()?;
                 (format!(
-                    "{pwd_prefix}mysql -u{user} -e 'CREATE DATABASE `{}`;' 2>&1",
-                    db.replace('`', "\\`")
+                    "{pwd_prefix}mysql -u{user} -e {} 2>&1",
+                    shell_quote(&format!("CREATE DATABASE `{}`;", db.replace('`', "``")))
                 ), 60_000)
             }
             "drop-db" => {
                 let db = require_db()?;
                 (format!(
-                    "{pwd_prefix}mysql -u{user} -e 'DROP DATABASE `{}`;' 2>&1",
-                    db.replace('`', "\\`")
+                    "{pwd_prefix}mysql -u{user} -e {} 2>&1",
+                    shell_quote(&format!("DROP DATABASE `{}`;", db.replace('`', "``")))
                 ), 60_000)
             }
             other => return Err(invalid_err(format!(

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use rmcp::{
     ServerHandler,
     handler::server::router::tool::ToolRouter,
@@ -10,7 +8,6 @@ use rmcp::{
     RoleServer,
 };
 
-use crate::config::Inventory;
 use crate::state::ConnectionPool;
 use crate::transport::SessionManager;
 
@@ -40,7 +37,6 @@ pub enum ServerRole {
 pub struct SshConnectServer {
     pub pool: ConnectionPool,
     pub sessions: SessionManager,
-    pub inventory: Arc<Inventory>,
     pub role: ServerRole,
     pub(crate) tool_router: ToolRouter<SshConnectServer>,
 }
@@ -65,7 +61,6 @@ impl SshConnectServer {
         Self {
             pool: ConnectionPool::new(),
             sessions: SessionManager::new(),
-            inventory: Arc::new(Inventory::load_default()),
             role: ServerRole::Owner,
             tool_router: Self::build_router(),
         }
@@ -78,7 +73,6 @@ impl SshConnectServer {
         Self {
             pool: ConnectionPool::new(),
             sessions: SessionManager::new(),
-            inventory: Arc::new(Inventory::load_default()),
             role: ServerRole::Proxy(peer),
             tool_router: Self::build_router(),
         }
@@ -122,7 +116,12 @@ impl ServerHandler for SshConnectServer {
         ))
         .with_instructions(
             "SSH-Connect: unified remote management over SSH, Telnet, and Serial. \
-             Two interaction styles share one session registry: \
+             Start with list_hosts: the user saves hosts (address, user, password/key, enable password) in \
+             `ssh-connect ui`, and you connect to them by name without ever handling their passwords — \
+             ssh_connect {host: <saved name>} for servers, connect {name: <saved name>} for switches/consoles \
+             (login/enable then need no password). If a host is missing, ask the user to add it there rather \
+             than to paste a password into the chat. Local file paths for transfers are relative to the user's \
+             transfer folder. Two interaction styles share one session registry: \
              (1) Server ops — ssh_connect, then ssh_exec (exit codes), ssh_upload_file/ssh_download_file/ssh_list_files (SFTP), \
              vps_system_stats, vps_logs, vps_process, vps_file_read, vps_file_ops, vps_cron, \
              ubuntu_service_control, vps_nginx_config, ubuntu_nginx_control, ubuntu_update_packages, ubuntu_ssl_certificate, \

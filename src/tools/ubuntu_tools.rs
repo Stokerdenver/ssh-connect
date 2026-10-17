@@ -91,7 +91,8 @@ struct DeployParams {
     connection_id: String,
     /// Action: deploy | backup | restore
     action: String,
-    /// Local path for deploy (file or directory)
+    /// Local file or directory for deploy, relative to the user's transfer
+    /// folder (default ~/ssh-connect-files); paths outside it are refused.
     local_path: Option<String>,
     /// Remote destination path
     remote_path: Option<String>,
@@ -370,6 +371,8 @@ $(apt-get -s dist-upgrade 2>/dev/null | grep '^Inst' | grep -i securi | awk '{{p
                 let local = params
                     .local_path
                     .ok_or_else(|| invalid_err("'localPath' required for deploy action"))?;
+                let local = crate::paths::resolve(&local, crate::paths::Access::Read)
+                    .map_err(invalid_err)?;
                 let remote = params
                     .remote_path
                     .ok_or_else(|| invalid_err("'remotePath' required for deploy action"))?;
@@ -408,11 +411,16 @@ $(apt-get -s dist-upgrade 2>/dev/null | grep '^Inst' | grep -i securi | awk '{{p
                     .await
                     .map_err(|e| internal_err(format!("SFTP init: {e}")))?;
 
-                let count = upload_path(&sftp, std::path::Path::new(&local), &remote)
+                let count = upload_path(&sftp, &local, &remote)
                     .await
                     .map_err(|e| internal_err(format!("Upload error: {e}")))?;
 
-                results.push(format!("deployed {} file(s) → '{}'", count, remote));
+                results.push(format!(
+                    "deployed {} file(s) from '{}' → '{}'",
+                    count,
+                    local.display(),
+                    remote
+                ));
             }
 
             other => {
@@ -531,6 +539,12 @@ async fn upload_path(
             let name = entry.file_name().to_string_lossy().replace('\\', "/");
             let remote_child = format!("{}/{}", remote.trim_end_matches('/'), name);
             let local_child = entry.path();
+            // A symlink/junction inside the transfer folder must not pull in
+            // files from outside it.
+            if !crate::paths::still_inside(&local_child) {
+                tracing::warn!(path = %local_child.display(), "skipping entry outside the transfer folder");
+                continue;
+            }
             // Box::pin for async recursion
             count += Box::pin(upload_path(sftp, &local_child, &remote_child)).await?;
         }

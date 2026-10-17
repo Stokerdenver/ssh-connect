@@ -26,7 +26,9 @@ Before any change to a production service or config:
 ## Connecting & running commands
 
 ```
-ssh_connect { host, username, password | privateKeyPath }      -> { connectionId }
+list_hosts  {}                                                   -> saved hosts (no secrets)
+ssh_connect { host: "<saved name>" }                             -> { connectionId }  (preferred)
+ssh_connect { host, username, password | privateKeyPath }      -> { connectionId }  (unsaved host)
 ssh_exec    { connectionId, command, cwd?, timeout? }            -> exit_code / stdout / stderr
 ```
 
