@@ -1,5 +1,7 @@
 # SSH-Connect
 
+**English** | [Русский](README.ru.md)
+
 A Rust [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for
 remote server administration and interactive network-device / console management over
 **SSH, Telnet, and Serial**, with a set of bundled skills and agents.
@@ -115,6 +117,139 @@ Or in an MCP settings file:
 
 The server speaks MCP over stdio; all logging goes to stderr (set `RUST_LOG=info` to see
 broker/role messages).
+
+In the examples below, replace the path with the location of your binary. On Windows
+point at `ssh-connect.exe` and escape backslashes in JSON
+(`"C:\\Tools\\ssh-connect\\ssh-connect.exe"`) or use forward slashes. Thanks to the
+broker, several clients (say, VS Code and OpenCode) can run at once and share the same
+live sessions.
+
+### VS Code
+
+**GitHub Copilot (agent mode).** Add the server for the current workspace in
+`.vscode/mcp.json` (note the top-level key is `servers`, not `mcpServers`):
+
+```json
+{
+  "servers": {
+    "ssh-connect": {
+      "type": "stdio",
+      "command": "/path/to/ssh-connect",
+      "env": { "RUST_LOG": "info" }
+    }
+  }
+}
+```
+
+For all workspaces, run **MCP: Open User Configuration** from the Command Palette and add
+the same entry, or register it from a terminal:
+
+```sh
+code --add-mcp "{\"name\":\"ssh-connect\",\"command\":\"/path/to/ssh-connect\"}"
+```
+
+Then open Copilot Chat, switch to **Agent** mode and enable the `ssh-connect` tools in the
+tools picker. **MCP: List Servers** shows status and output logs.
+
+**Claude Code extension.** The extension uses the same configuration as the CLI, so the
+`claude mcp add ...` command above is enough. For a project-scoped server, commit a
+`.mcp.json` at the repository root with the `mcpServers` block shown above.
+
+**Cline.** Click the **MCP Servers** icon in the Cline panel → **Configure** →
+**Configure MCP Servers**; this opens `cline_mcp_settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "ssh-connect": {
+      "command": "/path/to/ssh-connect",
+      "args": [],
+      "env": {},
+      "disabled": false,
+      "alwaysAllow": []
+    }
+  }
+}
+```
+
+Keep `alwaysAllow` empty (or list read-only tools such as `list_hosts`,
+`list_sessions`, `vps_system_stats` only) so that every state-changing command needs your
+approval.
+
+**Roo Code.** Same `mcpServers` format — globally via the MCP settings in the Roo panel
+(**Edit Global MCP**), or per project in `.roo/mcp.json`.
+
+**Continue.** Create `.continue/mcpServers/ssh-connect.yaml` in the workspace (MCP tools
+are available in Agent mode):
+
+```yaml
+name: SSH-Connect
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: ssh-connect
+    command: /path/to/ssh-connect
+    args: []
+```
+
+### OpenCode
+
+Add a `local` server under the `mcp` key in `opencode.json` — project-level at the
+repository root, or global in `~/.config/opencode/opencode.json`. `command` is an
+**array** (binary plus arguments):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ssh-connect": {
+      "type": "local",
+      "command": ["/path/to/ssh-connect"],
+      "enabled": true,
+      "timeout": 10000,
+      "environment": { "RUST_LOG": "info" }
+    }
+  }
+}
+```
+
+Run `opencode mcp list` to check that the server is connected. The tools appear as
+`ssh-connect_<tool>`; you can restrict them per agent with the `tools` / `permission`
+sections of the config (for example, set destructive tools to `"ask"`).
+
+### OpenClaw
+
+OpenClaw reads MCP servers from the `mcp.servers` block of `~/.openclaw/openclaw.json`
+(JSON5):
+
+```json5
+{
+  mcp: {
+    servers: {
+      "ssh-connect": {
+        command: "/path/to/ssh-connect",
+        args: [],
+        env: { RUST_LOG: "info" },
+      },
+    },
+  },
+}
+```
+
+Restart the gateway after editing, then check with `openclaw mcp list` /
+`openclaw mcp show ssh-connect`. The same block can be edited from the Control UI
+(`/settings/mcp`). OpenClaw is often reachable from messengers, so think about who can
+talk to the agent: SSH-Connect can change remote systems, and saved hosts give it
+credentials without asking. Restrict the agent with `toolFilter` (include/exclude
+lists), or register a separate read-only set of hosts.
+
+### Using it
+
+Once connected, ask the agent in plain language, e.g. *"List saved hosts and show disk
+and memory usage on web-01"* or *"Back up the running config of core-sw-01"*. Add
+servers in `ssh-connect ui` first (see below) so the agent never needs passwords in chat.
+The bundled `skills/` are plain Markdown — clients without native skill support can
+still use them as context or as custom instructions/rules.
 
 ## Saved hosts and the web UI
 
