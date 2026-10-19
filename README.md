@@ -2,17 +2,61 @@
 
 **English** | [Русский](README.ru.md)
 
+> Fork of [mixelpixx/SSH-Connect](https://github.com/mixelpixx/SSH-Connect) (MIT).
+> This fork adds a local web UI for saved hosts, keeps passwords out of the chat, and
+> fixes the security problems listed below. Everything else — all 38 tools, the skills
+> and the agents — works as in the original.
+
+## What this fork changes
+
+### Web UI for saved hosts
+
+Run `ssh-connect ui` or double-click `ssh-connect.exe`. A page opens in your browser
+where you add, edit and delete hosts — name, address, port, user, password **or** private
+key (+ passphrase), enable password for network gear, a description for the agent — and
+check each one with **Test connection**.
+
+- The agent sees only host names. It calls `list_hosts`, then `ssh_connect {host: "qa1"}`
+  or `connect {name: "switch"}`; `login` / `enable` use the stored passwords on their own.
+- Passwords are stored in the **Windows Credential Manager** (on other systems in
+  `~/.ssh-connect/secrets.json`, mode 0600) and are read by the server itself. They never
+  pass through the model, the chat or the LLM provider.
+- Changes apply immediately, without restarting the MCP client: the server re-reads the
+  host list on every call.
+- The page listens on `127.0.0.1` only, on a random port, and requires the per-run token
+  from the link printed in the console. It checks `Host` / `Origin`, sends a strict
+  Content-Security-Policy, and can set or delete secrets but never display them.
+
+Details: [Saved hosts and the web UI](#saved-hosts-and-the-web-ui).
+
+### Security fixes
+
+| Problem in the original | Fix in this fork |
+|---|---|
+| File-transfer tools (`ssh_upload_file`, `ssh_download_file`, `ubuntu_website_deployment`, `upload_config`, `download_config`, `switch_backup_config.save_to`) read and wrote **any** local path. A prompt-injected agent could upload `~/.ssh` to an arbitrary host or drop a file into the Windows Startup folder. | Local paths are confined to one transfer folder (`~/ssh-connect-files` by default). `..` and symlinks/junctions leading outside it are refused. |
+| Host keys: `ssh_connect` accepted any key by default and the interactive `connect` never checked them, so passwords could be intercepted by a man in the middle. | Trust-on-first-use is on by default for both paths. A changed key is refused and can be reset in the UI. |
+| `connect {name, host}` took the stored password of `name` and sent it to an address chosen by the agent. | Saved hosts are pinned: address, port and protocol cannot be overridden, and stored secrets are used only for the saved user. |
+| `hosts.toml` was read from the current directory, so a cloned repository could redirect saved host names to other addresses. | The host list lives only in `~/.ssh-connect/` (or wherever `SSHCONNECT_HOSTS` points). |
+| Passwords could only be passed as tool arguments, i.e. through the model and the chat history. | Passwords are kept in the OS credential store; `list_hosts` reports only whether one is saved. |
+| Shell injection through tool parameters: `chmod` mode, crontab user, `journalctl` unit, kill signal, nginx site name (path traversal under `sudo cp`), MySQL database name, health-check domains. | All of them are quoted or validated; the nginx temp file is created with `mktemp`. |
+| The broker named pipe / socket accepted any local account, and whoever created it first received every forwarded tool call. | The peer must run as the same OS user; remote pipe clients are rejected; the Unix socket is `0600`. |
+
+**Known limitations.** The `rsa` crate advisory RUSTSEC-2023-0071 has no upstream fix —
+prefer ed25519 keys. ssh-agent identities are offered to whatever host you connect to.
+Your MCP client's per-call approval is still the main safeguard: do not set this server
+to "always allow".
+
+## About the server
+
 A Rust [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for
 remote server administration and interactive network-device / console management over
-**SSH, Telnet, and Serial**, with a set of bundled skills and agents.
-
-SSH-Connect is the Rust successor to the TypeScript `SSH-MCP` tool. It combines two
-earlier Rust projects into one binary:
+**SSH, Telnet, and Serial**, with a set of bundled skills and agents. One binary covers
+two kinds of work:
 
 - **Server operations** — Linux/Ubuntu administration (nginx, SSL/certbot, UFW,
   packages, deployment, systemd, MySQL/MariaDB, Redis, Docker, logs, processes, files,
   cron). Each command runs on its own SSH channel and reports an exit code; file
-  transfer uses SFTP; optional trust-on-first-use host-key checking is available.
+  transfer uses SFTP; trust-on-first-use host-key checking is on by default.
 - **Interactive console** — prompt-aware management of switches, routers, and consoles
   over SSH (PTY), Telnet, and Serial, with pagination handling, enable/login flows, and
   fleet commands. A broker (Windows named pipe / Unix domain socket) lets multiple MCP
@@ -21,7 +65,7 @@ earlier Rust projects into one binary:
 Built on the `rmcp` MCP SDK. SSH is pure Rust via `russh` (no OpenSSL/C dependency).
 
 **Download:** prebuilt binaries for Linux, macOS, and Windows are on the
-[Releases page](https://github.com/mixelpixx/SSH-Connect/releases/latest) — no Rust
+[Releases page](https://github.com/Stokerdenver/ssh-connect/releases/latest) — no Rust
 toolchain required to run them.
 
 ## Two interaction models, one server
@@ -92,7 +136,7 @@ sudo apt-get install -y libudev-dev pkg-config   # Debian/Ubuntu
 
 Prefer not to build from source? Prebuilt binaries for Linux, macOS, and Windows are
 attached to every tagged release on the
-[Releases page](https://github.com/mixelpixx/SSH-Connect/releases/latest) (produced by
+[Releases page](https://github.com/Stokerdenver/ssh-connect/releases/latest) (produced by
 the `release` GitHub Actions workflow).
 
 ## Register with an MCP client
